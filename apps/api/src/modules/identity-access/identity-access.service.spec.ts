@@ -241,4 +241,51 @@ describe('IdentityAccessService', () => {
       expect(await prisma.user.findUnique({ where: { id: staleUser.userId } })).toBeNull();
     });
   });
+
+  describe('logout', () => {
+    it('ends only the given Session, leaving a second independently-created Session active', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+
+      clock.advanceMs(31_000);
+      await service.login(PHONE);
+      const secondSession = await service.verifyOtp({ ...PHONE, code: otpSender.latestCode() });
+
+      const [firstSession] = await prisma.session.findMany({ where: { userId } });
+
+      await service.logout(firstSession!.id);
+
+      expect(await prisma.session.findUnique({ where: { id: firstSession!.id } })).toBeNull();
+      expect(
+        await prisma.session.findUnique({ where: { token: secondSession.sessionToken } }),
+      ).not.toBeNull();
+    });
+
+    it('is idempotent against a concurrent double-logout of the same session', async () => {
+      const result = await registerAndVerify(service, otpSender);
+      const session = await prisma.session.findUniqueOrThrow({
+        where: { token: result.sessionToken },
+      });
+
+      await expect(
+        Promise.all([service.logout(session.id), service.logout(session.id)]),
+      ).resolves.toBeDefined();
+      expect(await prisma.session.findUnique({ where: { id: session.id } })).toBeNull();
+    });
+  });
+
+  describe('logoutAllDevices', () => {
+    it('revokes every Session for that User', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+
+      clock.advanceMs(31_000);
+      await service.login(PHONE);
+      await service.verifyOtp({ ...PHONE, code: otpSender.latestCode() });
+
+      expect(await prisma.session.count({ where: { userId } })).toBe(2);
+
+      await service.logoutAllDevices(userId);
+
+      expect(await prisma.session.count({ where: { userId } })).toBe(0);
+    });
+  });
 });

@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { countryCodeSchema, phoneNumberValueSchema } from './phone-number.dto.js';
+import {
+  countryCodeSchema,
+  phoneNumberValueSchema,
+  PhoneNumberRequestDto,
+} from './phone-number.dto.js';
 
 export const loginSchema = z.object({
   countryCode: countryCodeSchema,
@@ -7,3 +11,5 @@ export const loginSchema = z.object({
 });
 
 export type LoginDto = z.infer<typeof loginSchema>;
+
+export class LoginRequestDto extends PhoneNumberRequestDto implements LoginDto {}

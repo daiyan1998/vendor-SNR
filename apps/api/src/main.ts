@@ -14,6 +14,11 @@ async function bootstrap() {
     .setTitle('Vendors Hub API')
     .setDescription('API for the Vendors Hub multivendor marketplace')
     .setVersion('1.0')
+    .addBearerAuth({
+      type: 'http',
+      scheme: 'bearer',
+      description: 'A Session token from otp/verify',
+    })
     .build();
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api/docs', app, document);

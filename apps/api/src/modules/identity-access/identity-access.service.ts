@@ -168,6 +168,23 @@ export class IdentityAccessService {
     return { sessionToken: session.token, userId: session.userId };
   }
 
+  // Idempotent: a session already gone (e.g. a concurrent double-logout
+  // for the same token) is the goal state, not an error.
+  async logout(sessionId: string): Promise<void> {
+    try {
+      await this.prisma.session.delete({ where: { id: sessionId } });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async logoutAllDevices(userId: string): Promise<void> {
+    await this.prisma.session.deleteMany({ where: { userId } });
+  }
+
   private async issueOtp(
     input: PhoneNumberInput & { phoneNumberId: string; purpose: OtpPurpose; now: Date },
   ): Promise<OtpSentResult> {

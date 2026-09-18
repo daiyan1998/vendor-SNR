@@ -1,0 +1,3 @@
+# Customer relationship is owned by the Shop, not by individual staff
+
+The canonical customer relationship — conversation history, order history, bargains — belongs to the `Shop` aggregate, not to the individual staff member who handled it. Removing a staff member's `ShopMembership` revokes their access immediately but never cascades, deletes, or reassigns the historical records they were involved in; those stay attributed to the `Shop`. This is what lets a shop survive staff turnover without losing customer continuity. The alternative — attributing conversations/orders to the staff member — was rejected because it would fragment a customer's history across whichever employees happened to serve them, and lose it entirely on departure.

@@ -1,0 +1,15 @@
+# Pre-existing project content, not part of the app codebase this config formats
+.agents/
+.claude/
+doc/
+docs/
+CONTEXT.md
+CLAUDE.md
+skills-lock.json
+
+# Generated / lockfiles
+pnpm-lock.yaml
+**/dist/
+**/.next/
+**/.turbo/
+**/coverage/

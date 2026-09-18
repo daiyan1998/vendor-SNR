@@ -1,0 +1,3 @@
+# Physical verification required; verification is per-shop
+
+Vendors Hub restricts participation to verified physical shops — online-only sellers are ineligible — and verification is performed per shop, never inherited from a parent Business or a sibling Shop. Physical verification is the product's trust backbone: the reason a customer can trust a listing represents a real, accountable store. Scoping it per-shop prevents a fraudulent branch from inheriting legitimacy from a verified sibling, and keeps revocation scoped correctly. Trade-off: this adds onboarding friction for multi-shop businesses, which must verify every branch independently.

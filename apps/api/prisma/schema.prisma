@@ -1,0 +1,15 @@
+// Prisma schema for Vendors Hub.
+//
+// No field-level models yet: "complete data model (field-level schema)" is
+// an explicit open question in doc/PRD.md (§1.16 item 16, §18 item 19).
+// Models get added here per bounded context as each one goes through
+// /to-spec — see CONTEXT.md for the entities each context owns.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}

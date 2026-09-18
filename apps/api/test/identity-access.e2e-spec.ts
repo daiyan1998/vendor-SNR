@@ -81,4 +81,95 @@ describe('Identity & Access (e2e)', () => {
       .send({ countryCode: '880', number: '1710000001', displayName: 'Asha', tosAccepted: false })
       .expect(400);
   });
+
+  describe('logout', () => {
+    async function registerAndVerify(number: string) {
+      await request(app.getHttpServer())
+        .post('/identity-access/register')
+        .send({ countryCode: '880', number, displayName: 'Asha', tosAccepted: true })
+        .expect(201);
+
+      const { body } = await request(app.getHttpServer())
+        .post('/identity-access/otp/verify')
+        .send({ countryCode: '880', number, code: otpSender.latestCode() })
+        .expect(200);
+
+      return body.sessionToken as string;
+    }
+
+    it('rejects a request with no Authorization header', async () => {
+      await request(app.getHttpServer()).post('/identity-access/logout').expect(401);
+    });
+
+    it('ends only the current session, leaving a second session active, and rejects it on the next authenticated request', async () => {
+      const firstToken = await registerAndVerify('1710000010');
+
+      clock.advanceMs(31_000);
+      await request(app.getHttpServer())
+        .post('/identity-access/login')
+        .send({ countryCode: '880', number: '1710000010' })
+        .expect(201);
+      const { body: verifyBody } = await request(app.getHttpServer())
+        .post('/identity-access/otp/verify')
+        .send({ countryCode: '880', number: '1710000010', code: otpSender.latestCode() })
+        .expect(200);
+      const secondToken = verifyBody.sessionToken as string;
+
+      await request(app.getHttpServer())
+        .post('/identity-access/logout')
+        .set('Authorization', `Bearer ${firstToken}`)
+        .expect(200)
+        .expect(({ body }) => expect(body.status).toBe('logged_out'));
+
+      await request(app.getHttpServer())
+        .post('/identity-access/logout')
+        .set('Authorization', `Bearer ${firstToken}`)
+        .expect(401);
+
+      // The second session was never touched by the first logout.
+      await request(app.getHttpServer())
+        .post('/identity-access/logout')
+        .set('Authorization', `Bearer ${secondToken}`)
+        .expect(200);
+    });
+  });
+
+  describe('logout-all', () => {
+    it('revokes every session for the user, rejecting each on its next authenticated request', async () => {
+      await request(app.getHttpServer())
+        .post('/identity-access/register')
+        .send({ countryCode: '880', number: '1710000020', displayName: 'Asha', tosAccepted: true })
+        .expect(201);
+      const { body: firstVerify } = await request(app.getHttpServer())
+        .post('/identity-access/otp/verify')
+        .send({ countryCode: '880', number: '1710000020', code: otpSender.latestCode() })
+        .expect(200);
+      const tokenA = firstVerify.sessionToken as string;
+
+      clock.advanceMs(31_000);
+      await request(app.getHttpServer())
+        .post('/identity-access/login')
+        .send({ countryCode: '880', number: '1710000020' })
+        .expect(201);
+      const { body: secondVerify } = await request(app.getHttpServer())
+        .post('/identity-access/otp/verify')
+        .send({ countryCode: '880', number: '1710000020', code: otpSender.latestCode() })
+        .expect(200);
+      const tokenB = secondVerify.sessionToken as string;
+
+      await request(app.getHttpServer())
+        .post('/identity-access/logout-all')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .post('/identity-access/logout')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .expect(401);
+      await request(app.getHttpServer())
+        .post('/identity-access/logout')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(401);
+    });
+  });
 });

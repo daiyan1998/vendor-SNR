@@ -16,7 +16,7 @@ _Avoid_: Using "Vendor" as an entity name for new concepts — prefer "Shop".
 An amount paired with a currency. Used wherever a price or monetary figure is recorded (listing price, bargain offer, commission entry, invoice).
 
 **PhoneNumber**:
-A country code + number pair with a verified flag. The primary identity credential in this product (see Authentication).
+A country code + number pair with a verified flag. The sole identity credential in this product — see OTP and Session. There is no password.
 
 **Address**:
 A customer delivery address: line1, line2, city, area, optional geo-coordinates.
@@ -36,14 +36,26 @@ Central user identity, sessions, shop membership, roles, and permission override
 The single central identity for a person, holding their phone credential and sessions. A User has no fixed global role — capabilities come entirely from memberships (shop staff, business ownership, admin), so the same person can act in different capacities across different shops.
 _Avoid_: "Account" (ambiguous between User and Shop).
 
+**ShopInvitation**:
+A pending offer from a Shop to a phone number to join with a specific Role, keyed by phone number rather than User — the number need not be registered yet. Resolves into a ShopMembership on acceptance, or terminates on decline, cancellation by the Shop, or a 7-day expiry. A new ShopInvitation may be sent after a prior one terminates.
+
 **ShopMembership**:
-The link between a User and a Shop, carrying a Role plus any per-user overrides. Tracks invite → accept → removal.
+The link between a User and a Shop, carrying a Role plus any per-user overrides. Created the moment a ShopInvitation is accepted, and tracks accept → removal from there.
+_Avoid_: conflating with ShopInvitation — a ShopMembership only exists post-acceptance and always has a User attached; before that, it's just a pending ShopInvitation.
 
 **Role**:
-A named permission bundle on the vendor side (Shop Owner, Shop Manager, Salesperson) or admin side (Super Admin, Admin, Moderator). Role defaults can be widened per user via an override — see Permission override.
+A named permission bundle, either vendor-side (Shop Owner, Shop Manager, Salesperson) — scoped to a single Shop via a ShopMembership — or admin-side (Super Admin, Admin, Moderator) — global/platform-level, with no Shop scoping at all. Role defaults are fixed platform-wide, never customized per shop, and can only be widened per user via an override — see Permission override.
 
 **Permission override**:
-A per-user or per-shop grant that widens a Role's default permissions (e.g., letting a specific Salesperson accept bargains without promoting them to Manager). Effective permissions = Role defaults + overrides.
+A per-user or per-shop grant that widens a Role's default permissions (e.g., letting a specific Salesperson accept bargains without promoting them to Manager). Effective permissions = Role defaults + overrides — overrides only ever widen, never narrow, and only a Shop Owner may grant one.
+
+**OTP**:
+The one-time code sent to a PhoneNumber to prove ownership. It is the entire credential — Registration and Login both end the same way: an OTP verified against a PhoneNumber, with no password involved anywhere in the product.
+_Avoid_: "Password", "credential" alone (PhoneNumber + OTP together are the credential).
+
+**Session**:
+An authenticated device instance tied to a User, created the moment an OTP verification succeeds. Registration and Login both terminate in a Session directly — there is no separate login step after a successful OTP. A User may hold multiple concurrent Sessions (e.g. phone app and web at once) — logging in on one device never invalidates another.
+_Avoid_: "Token" (Session is the domain concept; its implementation — cookie, JWT, etc. — is not).
 
 ## Shop & Verification
 

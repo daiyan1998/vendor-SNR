@@ -11,8 +11,10 @@ build/
 
 # env
 .env
+.env.test
 .env.*.local
 apps/**/.env
+apps/**/.env.test
 !.env.example
 !apps/**/.env.example
 

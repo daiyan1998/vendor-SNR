@@ -4,6 +4,11 @@ export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3000),
   DATABASE_URL: z.string().url(),
+  // Country calling codes (no leading "+") registration is open to.
+  ALLOWED_COUNTRY_CODES: z
+    .string()
+    .default('880')
+    .transform((value) => value.split(',').map((code) => code.trim())),
 });
 
 export type Env = z.infer<typeof envSchema>;

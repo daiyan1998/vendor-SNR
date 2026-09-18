@@ -1,9 +1,11 @@
 // Prisma schema for Vendors Hub.
 //
-// No field-level models yet: "complete data model (field-level schema)" is
-// an explicit open question in doc/PRD.md (§1.16 item 16, §18 item 19).
-// Models get added here per bounded context as each one goes through
-// /to-spec — see CONTEXT.md for the entities each context owns.
+// Field-level models are added here per bounded context as each one goes
+// through /to-spec — see CONTEXT.md for the entities each context owns.
+// Identity & Access (User, PhoneNumber, OtpChallenge, Session) is modeled
+// below per issue #2 / ADR-0010 (phone + OTP only, no password). Other
+// contexts remain an open question — see doc/PRD.md (§1.16 item 16, §18
+// item 19).
 
 generator client {
   provider = "prisma-client-js"
@@ -12,4 +14,72 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// Identity & Access
+
+model User {
+  id            String   @id @default(uuid())
+  displayName   String
+  tosAcceptedAt DateTime
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  phoneNumber PhoneNumber?
+  sessions    Session[]
+
+  @@map("users")
+}
+
+model PhoneNumber {
+  id          String    @id @default(uuid())
+  userId      String    @unique
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  countryCode String
+  number      String
+  verified    Boolean   @default(false)
+  verifiedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  otpChallenges OtpChallenge[]
+
+  // Only one identity attempt (verified or pending) may occupy a given
+  // number at a time; expired pending attempts are pruned to free it up.
+  @@unique([countryCode, number])
+  @@map("phone_numbers")
+}
+
+enum OtpPurpose {
+  REGISTRATION
+  LOGIN
+}
+
+model OtpChallenge {
+  id                String      @id @default(uuid())
+  phoneNumberId     String
+  phoneNumber       PhoneNumber @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  purpose           OtpPurpose
+  codeHash          String
+  expiresAt         DateTime
+  attemptCount      Int         @default(0)
+  lockedAt          DateTime?
+  consumedAt        DateTime?
+  consumedSessionId String?
+  consumedSession   Session?    @relation(fields: [consumedSessionId], references: [id], onDelete: SetNull)
+  createdAt         DateTime    @default(now())
+
+  @@index([phoneNumberId, createdAt])
+  @@map("otp_challenges")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String   @unique
+  createdAt DateTime @default(now())
+
+  consumedByOtpChallenges OtpChallenge[]
+
+  @@map("sessions")
 }

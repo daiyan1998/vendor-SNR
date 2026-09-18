@@ -5,6 +5,7 @@ import {
   HttpException,
   NotFoundException,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PrismaService } from '../../prisma/prisma.service.js';
@@ -286,6 +287,75 @@ describe('IdentityAccessService', () => {
       await service.logoutAllDevices(userId);
 
       expect(await prisma.session.count({ where: { userId } })).toBe(0);
+    });
+  });
+
+  describe('listSessions', () => {
+    it('returns both Sessions for a User with two active Sessions, distinguishable by id', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+
+      clock.advanceMs(31_000);
+      await service.login(PHONE);
+      await service.verifyOtp({ ...PHONE, code: otpSender.latestCode() });
+
+      const sessions = await service.listSessions(userId);
+
+      expect(sessions).toHaveLength(2);
+      expect(new Set(sessions.map((session) => session.id)).size).toBe(2);
+    });
+
+    it("does not return another User's Sessions", async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+      await service.register({ ...registerInput, countryCode: '880', number: '1710000099' });
+      const otherCode = otpSender.latestCode();
+      await service.verifyOtp({ countryCode: '880', number: '1710000099', code: otherCode });
+
+      const sessions = await service.listSessions(userId);
+
+      expect(sessions).toHaveLength(1);
+    });
+  });
+
+  describe('revokeSession', () => {
+    it('revokes one listed Session by id, leaving a second Session untouched', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+
+      clock.advanceMs(31_000);
+      await service.login(PHONE);
+      const secondSession = await service.verifyOtp({ ...PHONE, code: otpSender.latestCode() });
+
+      const [firstSession] = await service.listSessions(userId);
+
+      await service.revokeSession(userId, firstSession!.id);
+
+      expect(await prisma.session.findUnique({ where: { id: firstSession!.id } })).toBeNull();
+      expect(
+        await prisma.session.findUnique({ where: { token: secondSession.sessionToken } }),
+      ).not.toBeNull();
+    });
+
+    it("rejects revoking another User's Session", async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+      await service.register({ ...registerInput, countryCode: '880', number: '1710000099' });
+      const { userId: otherUserId } = await service.verifyOtp({
+        countryCode: '880',
+        number: '1710000099',
+        code: otpSender.latestCode(),
+      });
+      const [otherSession] = await service.listSessions(otherUserId);
+
+      await expect(service.revokeSession(userId, otherSession!.id)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(await prisma.session.findUnique({ where: { id: otherSession!.id } })).not.toBeNull();
+    });
+
+    it('rejects revoking a Session id that does not exist', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+
+      await expect(service.revokeSession(userId, randomUUID())).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
   });
 });

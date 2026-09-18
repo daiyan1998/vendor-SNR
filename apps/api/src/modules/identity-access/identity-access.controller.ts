@@ -1,4 +1,15 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, UseGuards, UsePipes } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  UseGuards,
+  UsePipes,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
 import { CurrentSession, type AuthenticatedSession } from './current-session.decorator.js';
@@ -8,6 +19,8 @@ import { OtpSentResponseDto } from './dto/otp-sent-response.dto.js';
 import { RegisterRequestDto, registerSchema, type RegisterDto } from './dto/register.dto.js';
 import { ResendOtpRequestDto, resendOtpSchema, type ResendOtpDto } from './dto/resend-otp.dto.js';
 import { SessionResponseDto } from './dto/session-response.dto.js';
+import { SessionRevokedResponseDto } from './dto/session-revoked-response.dto.js';
+import { SessionSummaryDto } from './dto/session-summary.dto.js';
 import { VerifyOtpRequestDto, verifyOtpSchema, type VerifyOtpDto } from './dto/verify-otp.dto.js';
 import { IdentityAccessService } from './identity-access.service.js';
 import { SessionGuard } from './session.guard.js';
@@ -72,5 +85,27 @@ export class IdentityAccessController {
   async logoutAll(@CurrentSession() session: AuthenticatedSession): Promise<LoggedOutResponseDto> {
     await this.identityAccessService.logoutAllDevices(session.userId);
     return { status: 'logged_out' };
+  }
+
+  @Get('sessions')
+  @UseGuards(SessionGuard)
+  @ApiBearerAuth()
+  @ApiOkResponse({ type: SessionSummaryDto, isArray: true })
+  async listSessions(
+    @CurrentSession() session: AuthenticatedSession,
+  ): Promise<SessionSummaryDto[]> {
+    return this.identityAccessService.listSessions(session.userId);
+  }
+
+  @Delete('sessions/:sessionId')
+  @UseGuards(SessionGuard)
+  @ApiBearerAuth()
+  @ApiOkResponse({ type: SessionRevokedResponseDto })
+  async revokeSession(
+    @CurrentSession() session: AuthenticatedSession,
+    @Param('sessionId') sessionId: string,
+  ): Promise<SessionRevokedResponseDto> {
+    await this.identityAccessService.revokeSession(session.userId, sessionId);
+    return { status: 'revoked' };
   }
 }

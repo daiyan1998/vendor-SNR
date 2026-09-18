@@ -11,3 +11,8 @@ export interface SessionResult {
   sessionToken: string;
   userId: string;
 }
+
+export interface SessionSummary {
+  id: string;
+  createdAt: Date;
+}

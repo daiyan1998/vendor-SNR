@@ -16,7 +16,12 @@ import type { LoginDto } from './dto/login.dto.js';
 import type { RegisterDto } from './dto/register.dto.js';
 import type { ResendOtpDto } from './dto/resend-otp.dto.js';
 import type { VerifyOtpDto } from './dto/verify-otp.dto.js';
-import type { OtpSentResult, PhoneNumberInput, SessionResult } from './identity-access.types.js';
+import type {
+  OtpSentResult,
+  PhoneNumberInput,
+  SessionResult,
+  SessionSummary,
+} from './identity-access.types.js';
 import { generateOtpCode, generateSessionToken, hashOtpCode } from './otp/otp-code.util.js';
 import {
   OTP_EXPIRY_MS,
@@ -183,6 +188,25 @@ export class IdentityAccessService {
 
   async logoutAllDevices(userId: string): Promise<void> {
     await this.prisma.session.deleteMany({ where: { userId } });
+  }
+
+  async listSessions(userId: string): Promise<SessionSummary[]> {
+    return this.prisma.session.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, createdAt: true },
+    });
+  }
+
+  // Scoped to the given User: a Session that exists but belongs to someone
+  // else is reported as not found rather than forbidden, so a caller can't
+  // use this to probe which session ids exist for another account.
+  async revokeSession(userId: string, sessionId: string): Promise<void> {
+    const session = await this.prisma.session.findUnique({ where: { id: sessionId } });
+    if (!session || session.userId !== userId) {
+      throw new NotFoundException('Session not found.');
+    }
+    await this.logout(sessionId);
   }
 
   private async issueOtp(

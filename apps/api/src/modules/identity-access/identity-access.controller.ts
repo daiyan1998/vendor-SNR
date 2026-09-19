@@ -12,16 +12,27 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiBody, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe.js';
+import {
+  ChangePhoneNumberRequestDto,
+  changePhoneNumberSchema,
+  type ChangePhoneNumberDto,
+} from './dto/change-phone-number.dto.js';
 import { CurrentSession, type AuthenticatedSession } from './current-session.decorator.js';
 import { LoggedOutResponseDto } from './dto/logged-out-response.dto.js';
 import { LoginRequestDto, loginSchema, type LoginDto } from './dto/login.dto.js';
 import { OtpSentResponseDto } from './dto/otp-sent-response.dto.js';
+import { PhoneNumberChangedResponseDto } from './dto/phone-number-changed-response.dto.js';
 import { RegisterRequestDto, registerSchema, type RegisterDto } from './dto/register.dto.js';
 import { ResendOtpRequestDto, resendOtpSchema, type ResendOtpDto } from './dto/resend-otp.dto.js';
 import { SessionResponseDto } from './dto/session-response.dto.js';
 import { SessionRevokedResponseDto } from './dto/session-revoked-response.dto.js';
 import { SessionSummaryDto } from './dto/session-summary.dto.js';
 import { VerifyOtpRequestDto, verifyOtpSchema, type VerifyOtpDto } from './dto/verify-otp.dto.js';
+import {
+  VerifyPhoneNumberChangeRequestDto,
+  verifyPhoneNumberChangeSchema,
+  type VerifyPhoneNumberChangeDto,
+} from './dto/verify-phone-number-change.dto.js';
 import { IdentityAccessService } from './identity-access.service.js';
 import { SessionGuard } from './session.guard.js';
 
@@ -107,5 +118,36 @@ export class IdentityAccessController {
   ): Promise<SessionRevokedResponseDto> {
     await this.identityAccessService.revokeSession(session.userId, sessionId);
     return { status: 'revoked' };
+  }
+
+  // Scoped to @Body() rather than method-level @UsePipes: this handler also
+  // takes @CurrentSession(), and ZodValidationPipe validates whatever value
+  // it's given regardless of parameter type — a method-level pipe would
+  // validate the session object against this body schema too.
+  @Post('phone-number/change')
+  @UseGuards(SessionGuard)
+  @ApiBearerAuth()
+  @ApiBody({ type: ChangePhoneNumberRequestDto })
+  @ApiOkResponse({ type: OtpSentResponseDto })
+  async changePhoneNumber(
+    @CurrentSession() session: AuthenticatedSession,
+    @Body(new ZodValidationPipe(changePhoneNumberSchema)) body: ChangePhoneNumberDto,
+  ): Promise<OtpSentResponseDto> {
+    const { expiresAt } = await this.identityAccessService.changePhoneNumber(session.userId, body);
+    return { status: 'otp_sent', expiresAt };
+  }
+
+  @Post('phone-number/change/verify')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(SessionGuard)
+  @ApiBearerAuth()
+  @ApiBody({ type: VerifyPhoneNumberChangeRequestDto })
+  @ApiOkResponse({ type: PhoneNumberChangedResponseDto })
+  async verifyPhoneNumberChange(
+    @CurrentSession() session: AuthenticatedSession,
+    @Body(new ZodValidationPipe(verifyPhoneNumberChangeSchema)) body: VerifyPhoneNumberChangeDto,
+  ): Promise<PhoneNumberChangedResponseDto> {
+    await this.identityAccessService.verifyPhoneNumberChange(session.userId, session.id, body);
+    return { status: 'phone_number_changed' };
   }
 }

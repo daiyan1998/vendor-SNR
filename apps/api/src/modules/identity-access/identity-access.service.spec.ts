@@ -15,6 +15,7 @@ import { IdentityAccessService } from './identity-access.service.js';
 import { FakeOtpSender } from './otp/fake-otp-sender.js';
 
 const PHONE = { countryCode: '880', number: '1710000000' };
+const NEW_PHONE = { countryCode: '880', number: '1710000088' };
 const registerInput = { ...PHONE, displayName: 'Asha', tosAccepted: true };
 
 async function registerAndVerify(service: IdentityAccessService, otpSender: FakeOtpSender) {
@@ -356,6 +357,157 @@ describe('IdentityAccessService', () => {
       await expect(service.revokeSession(userId, randomUUID())).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+  });
+
+  describe('changePhoneNumber / verifyPhoneNumberChange', () => {
+    it('updates the PhoneNumber to the new number on correct OTP verification', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+      const [session] = await prisma.session.findMany({ where: { userId } });
+
+      clock.advanceMs(31_000);
+      await service.changePhoneNumber(userId, NEW_PHONE);
+      const code = otpSender.latestCode();
+      await service.verifyPhoneNumberChange(userId, session!.id, { ...NEW_PHONE, code });
+
+      const phone = await prisma.phoneNumber.findUniqueOrThrow({ where: { userId } });
+      expect(phone.countryCode).toBe(NEW_PHONE.countryCode);
+      expect(phone.number).toBe(NEW_PHONE.number);
+    });
+
+    it('rejects at request time a number already claimed by a different verified User, sending no OTP', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+      await service.register({ ...registerInput, ...NEW_PHONE });
+      await service.verifyOtp({ ...NEW_PHONE, code: otpSender.latestCode() });
+      const sentBefore = otpSender.sent.length;
+
+      await expect(service.changePhoneNumber(userId, NEW_PHONE)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+
+      expect(otpSender.sent).toHaveLength(sentBefore);
+      const phone = await prisma.phoneNumber.findUniqueOrThrow({ where: { userId } });
+      expect(phone).toMatchObject(PHONE);
+    });
+
+    it('rejects at verify time a number claimed by someone else after the OTP was sent, leaving the number unchanged', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+      const [session] = await prisma.session.findMany({ where: { userId } });
+
+      clock.advanceMs(31_000);
+      await service.changePhoneNumber(userId, NEW_PHONE);
+      const code = otpSender.latestCode();
+
+      // Someone else claims NEW_PHONE after the OTP was already sent.
+      await service.register({ ...registerInput, ...NEW_PHONE });
+      await service.verifyOtp({ ...NEW_PHONE, code: otpSender.latestCode() });
+
+      await expect(
+        service.verifyPhoneNumberChange(userId, session!.id, { ...NEW_PHONE, code }),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      const phone = await prisma.phoneNumber.findUniqueOrThrow({ where: { userId } });
+      expect(phone).toMatchObject(PHONE);
+    });
+
+    it('revokes every other Session on a successful change, leaving the changing Session valid', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+      const [firstSession] = await prisma.session.findMany({ where: { userId } });
+
+      clock.advanceMs(31_000);
+      await service.login(PHONE);
+      const secondSessionResult = await service.verifyOtp({
+        ...PHONE,
+        code: otpSender.latestCode(),
+      });
+
+      clock.advanceMs(31_000);
+      await service.changePhoneNumber(userId, NEW_PHONE);
+      const code = otpSender.latestCode();
+      await service.verifyPhoneNumberChange(userId, firstSession!.id, { ...NEW_PHONE, code });
+
+      expect(await prisma.session.findUnique({ where: { id: firstSession!.id } })).not.toBeNull();
+      expect(
+        await prisma.session.findUnique({ where: { token: secondSessionResult.sessionToken } }),
+      ).toBeNull();
+    });
+
+    it('frees the old number for a fresh Registration immediately, with no cooldown', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+      const [session] = await prisma.session.findMany({ where: { userId } });
+
+      clock.advanceMs(31_000);
+      await service.changePhoneNumber(userId, NEW_PHONE);
+      await service.verifyPhoneNumberChange(userId, session!.id, {
+        ...NEW_PHONE,
+        code: otpSender.latestCode(),
+      });
+
+      await expect(service.register(registerInput)).resolves.toBeDefined();
+
+      const phone = await prisma.phoneNumber.findUniqueOrThrow({
+        where: { countryCode_number: PHONE },
+      });
+      expect(phone.userId).not.toBe(userId);
+    });
+
+    it('rejects changing to the phone number already on the account', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+
+      await expect(service.changePhoneNumber(userId, PHONE)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(otpSender.sent).toHaveLength(1);
+    });
+
+    it('rejects an incorrect code without changing the number', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+      const [session] = await prisma.session.findMany({ where: { userId } });
+      clock.advanceMs(31_000);
+      await service.changePhoneNumber(userId, NEW_PHONE);
+
+      await expect(
+        service.verifyPhoneNumberChange(userId, session!.id, { ...NEW_PHONE, code: '000000' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      const phone = await prisma.phoneNumber.findUniqueOrThrow({ where: { userId } });
+      expect(phone).toMatchObject(PHONE);
+    });
+
+    it('locks after 5 wrong attempts, rejecting even the correct code until a fresh one is sent', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+      const [session] = await prisma.session.findMany({ where: { userId } });
+      clock.advanceMs(31_000);
+      await service.changePhoneNumber(userId, NEW_PHONE);
+      const correctCode = otpSender.latestCode();
+
+      for (let i = 0; i < 5; i++) {
+        await expect(
+          service.verifyPhoneNumberChange(userId, session!.id, { ...NEW_PHONE, code: '000000' }),
+        ).rejects.toBeDefined();
+      }
+
+      await expect(
+        service.verifyPhoneNumberChange(userId, session!.id, { ...NEW_PHONE, code: correctCode }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('is idempotent against replaying an already-used, still-valid code', async () => {
+      const { userId } = await registerAndVerify(service, otpSender);
+      const [session] = await prisma.session.findMany({ where: { userId } });
+      clock.advanceMs(31_000);
+      await service.changePhoneNumber(userId, NEW_PHONE);
+      const code = otpSender.latestCode();
+
+      await expect(
+        service.verifyPhoneNumberChange(userId, session!.id, { ...NEW_PHONE, code }),
+      ).resolves.toBeUndefined();
+      await expect(
+        service.verifyPhoneNumberChange(userId, session!.id, { ...NEW_PHONE, code }),
+      ).resolves.toBeUndefined();
+
+      const phone = await prisma.phoneNumber.findUniqueOrThrow({ where: { userId } });
+      expect(phone).toMatchObject(NEW_PHONE);
     });
   });
 });

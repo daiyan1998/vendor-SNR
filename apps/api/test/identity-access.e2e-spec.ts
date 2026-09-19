@@ -275,4 +275,98 @@ describe('Identity & Access (e2e)', () => {
         .expect(200);
     });
   });
+
+  describe('phone-number/change', () => {
+    async function registerAndVerify(number: string) {
+      await request(app.getHttpServer())
+        .post('/identity-access/register')
+        .send({ countryCode: '880', number, displayName: 'Asha', tosAccepted: true })
+        .expect(201);
+
+      const { body } = await request(app.getHttpServer())
+        .post('/identity-access/otp/verify')
+        .send({ countryCode: '880', number, code: otpSender.latestCode() })
+        .expect(200);
+
+      return body.sessionToken as string;
+    }
+
+    it('rejects requests with no Authorization header', async () => {
+      await request(app.getHttpServer())
+        .post('/identity-access/phone-number/change')
+        .send({ countryCode: '880', number: '1710000041' })
+        .expect(401);
+
+      await request(app.getHttpServer())
+        .post('/identity-access/phone-number/change/verify')
+        .send({ countryCode: '880', number: '1710000041', code: '000000' })
+        .expect(401);
+    });
+
+    it('changes the phone number, keeps the changing session valid, and revokes every other session', async () => {
+      const firstToken = await registerAndVerify('1710000040');
+
+      clock.advanceMs(31_000);
+      await request(app.getHttpServer())
+        .post('/identity-access/login')
+        .send({ countryCode: '880', number: '1710000040' })
+        .expect(201);
+      const { body: secondVerify } = await request(app.getHttpServer())
+        .post('/identity-access/otp/verify')
+        .send({ countryCode: '880', number: '1710000040', code: otpSender.latestCode() })
+        .expect(200);
+      const secondToken = secondVerify.sessionToken as string;
+
+      clock.advanceMs(31_000);
+      await request(app.getHttpServer())
+        .post('/identity-access/phone-number/change')
+        .set('Authorization', `Bearer ${firstToken}`)
+        .send({ countryCode: '880', number: '1710000041' })
+        .expect(201)
+        .expect(({ body }) => expect(body.status).toBe('otp_sent'));
+
+      await request(app.getHttpServer())
+        .post('/identity-access/phone-number/change/verify')
+        .set('Authorization', `Bearer ${firstToken}`)
+        .send({ countryCode: '880', number: '1710000041', code: otpSender.latestCode() })
+        .expect(200)
+        .expect(({ body }) => expect(body.status).toBe('phone_number_changed'));
+
+      // The changing session remains valid.
+      await request(app.getHttpServer())
+        .post('/identity-access/logout')
+        .set('Authorization', `Bearer ${firstToken}`)
+        .expect(200);
+
+      // The other, pre-existing session was revoked by the change.
+      await request(app.getHttpServer())
+        .post('/identity-access/logout')
+        .set('Authorization', `Bearer ${secondToken}`)
+        .expect(401);
+
+      // The old number is immediately available for a fresh registration.
+      await request(app.getHttpServer())
+        .post('/identity-access/register')
+        .send({ countryCode: '880', number: '1710000040', displayName: 'Bina', tosAccepted: true })
+        .expect(201);
+    });
+
+    it('rejects changing to a number already in use, leaving the number unchanged', async () => {
+      const firstToken = await registerAndVerify('1710000042');
+      await registerAndVerify('1710000043');
+
+      await request(app.getHttpServer())
+        .post('/identity-access/phone-number/change')
+        .set('Authorization', `Bearer ${firstToken}`)
+        .send({ countryCode: '880', number: '1710000043' })
+        .expect(409);
+
+      // The unchanged number can still log in.
+      clock.advanceMs(31_000);
+      await request(app.getHttpServer())
+        .post('/identity-access/login')
+        .send({ countryCode: '880', number: '1710000042' })
+        .expect(201);
+    });
+  });
 });

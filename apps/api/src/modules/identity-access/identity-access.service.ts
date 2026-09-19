@@ -9,7 +9,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, type OtpPurpose, type PhoneNumber } from '@prisma/client';
+import { Prisma, type OtpChallenge, type OtpPurpose, type PhoneNumber } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { CLOCK, type Clock } from './clock.js';
 import type { LoginDto } from './dto/login.dto.js';
@@ -134,26 +134,7 @@ export class IdentityAccessService {
       };
     }
 
-    if (challenge.lockedAt) {
-      throw new ForbiddenException('Too many incorrect attempts. Request a new code.');
-    }
-
-    if (now >= challenge.expiresAt) {
-      throw new BadRequestException('This code has expired. Request a new one.');
-    }
-
-    if (challenge.codeHash !== codeHash) {
-      const attemptCount = challenge.attemptCount + 1;
-      const isNowLocked = attemptCount >= OTP_MAX_FAILED_ATTEMPTS;
-      await this.prisma.otpChallenge.update({
-        where: { id: challenge.id },
-        data: { attemptCount, lockedAt: isNowLocked ? now : undefined },
-      });
-      if (isNowLocked) {
-        throw new ForbiddenException('Too many incorrect attempts. Request a new code.');
-      }
-      throw new BadRequestException('Incorrect code.');
-    }
+    await this.assertChallengeCodeMatches(challenge, codeHash, now);
 
     const session = await this.prisma.session.create({
       data: { userId: phone.userId, token: generateSessionToken(), createdAt: now },
@@ -265,26 +246,7 @@ export class IdentityAccessService {
       return;
     }
 
-    if (challenge.lockedAt) {
-      throw new ForbiddenException('Too many incorrect attempts. Request a new code.');
-    }
-
-    if (now >= challenge.expiresAt) {
-      throw new BadRequestException('This code has expired. Request a new one.');
-    }
-
-    if (challenge.codeHash !== codeHash) {
-      const attemptCount = challenge.attemptCount + 1;
-      const isNowLocked = attemptCount >= OTP_MAX_FAILED_ATTEMPTS;
-      await this.prisma.otpChallenge.update({
-        where: { id: challenge.id },
-        data: { attemptCount, lockedAt: isNowLocked ? now : undefined },
-      });
-      if (isNowLocked) {
-        throw new ForbiddenException('Too many incorrect attempts. Request a new code.');
-      }
-      throw new BadRequestException('Incorrect code.');
-    }
+    await this.assertChallengeCodeMatches(challenge, codeHash, now);
 
     // Re-check availability at the moment of verification: the number may
     // have been claimed by someone else since the OTP was sent.
@@ -322,6 +284,37 @@ export class IdentityAccessService {
     const existing = await this.findActivePhone(input, now);
     if (existing && existing.userId !== excludingUserId) {
       throw new ConflictException('This phone number is already in use.');
+    }
+  }
+
+  // Shared by verifyOtp and verifyPhoneNumberChange for a not-yet-consumed
+  // challenge: throws on a lock, an expiry, or a wrong code (incrementing
+  // attemptCount and locking once OTP_MAX_FAILED_ATTEMPTS is hit); returns
+  // once the code matches, leaving the caller to perform its own outcome.
+  private async assertChallengeCodeMatches(
+    challenge: OtpChallenge,
+    codeHash: string,
+    now: Date,
+  ): Promise<void> {
+    if (challenge.lockedAt) {
+      throw new ForbiddenException('Too many incorrect attempts. Request a new code.');
+    }
+
+    if (now >= challenge.expiresAt) {
+      throw new BadRequestException('This code has expired. Request a new one.');
+    }
+
+    if (challenge.codeHash !== codeHash) {
+      const attemptCount = challenge.attemptCount + 1;
+      const isNowLocked = attemptCount >= OTP_MAX_FAILED_ATTEMPTS;
+      await this.prisma.otpChallenge.update({
+        where: { id: challenge.id },
+        data: { attemptCount, lockedAt: isNowLocked ? now : undefined },
+      });
+      if (isNowLocked) {
+        throw new ForbiddenException('Too many incorrect attempts. Request a new code.');
+      }
+      throw new BadRequestException('Incorrect code.');
     }
   }
 

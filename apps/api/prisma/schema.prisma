@@ -52,21 +52,27 @@ model PhoneNumber {
 enum OtpPurpose {
   REGISTRATION
   LOGIN
+  PHONE_CHANGE
 }
 
 model OtpChallenge {
-  id                String      @id @default(uuid())
-  phoneNumberId     String
-  phoneNumber       PhoneNumber @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
-  purpose           OtpPurpose
-  codeHash          String
-  expiresAt         DateTime
-  attemptCount      Int         @default(0)
-  lockedAt          DateTime?
-  consumedAt        DateTime?
-  consumedSessionId String?
-  consumedSession   Session?    @relation(fields: [consumedSessionId], references: [id], onDelete: SetNull)
-  createdAt         DateTime    @default(now())
+  id                 String      @id @default(uuid())
+  phoneNumberId      String
+  phoneNumber        PhoneNumber @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  purpose            OtpPurpose
+  // Only set for PHONE_CHANGE: the not-yet-owned number the code was sent
+  // to, which phoneNumberId (the User's current, already-verified number)
+  // still identifies for rate-limiting purposes.
+  pendingCountryCode String?
+  pendingNumber      String?
+  codeHash           String
+  expiresAt          DateTime
+  attemptCount       Int         @default(0)
+  lockedAt           DateTime?
+  consumedAt         DateTime?
+  consumedSessionId  String?
+  consumedSession    Session?    @relation(fields: [consumedSessionId], references: [id], onDelete: SetNull)
+  createdAt          DateTime    @default(now())
 
   @@index([phoneNumberId, createdAt])
   @@map("otp_challenges")

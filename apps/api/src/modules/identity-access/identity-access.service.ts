@@ -9,13 +9,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, type OtpPurpose, type PhoneNumber } from '@prisma/client';
+import { Prisma, type OtpChallenge, type OtpPurpose, type PhoneNumber } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { CLOCK, type Clock } from './clock.js';
 import type { LoginDto } from './dto/login.dto.js';
 import type { RegisterDto } from './dto/register.dto.js';
 import type { ResendOtpDto } from './dto/resend-otp.dto.js';
 import type { VerifyOtpDto } from './dto/verify-otp.dto.js';
+import type { VerifyPhoneNumberChangeDto } from './dto/verify-phone-number-change.dto.js';
 import type {
   OtpSentResult,
   PhoneNumberInput,
@@ -133,26 +134,7 @@ export class IdentityAccessService {
       };
     }
 
-    if (challenge.lockedAt) {
-      throw new ForbiddenException('Too many incorrect attempts. Request a new code.');
-    }
-
-    if (now >= challenge.expiresAt) {
-      throw new BadRequestException('This code has expired. Request a new one.');
-    }
-
-    if (challenge.codeHash !== codeHash) {
-      const attemptCount = challenge.attemptCount + 1;
-      const isNowLocked = attemptCount >= OTP_MAX_FAILED_ATTEMPTS;
-      await this.prisma.otpChallenge.update({
-        where: { id: challenge.id },
-        data: { attemptCount, lockedAt: isNowLocked ? now : undefined },
-      });
-      if (isNowLocked) {
-        throw new ForbiddenException('Too many incorrect attempts. Request a new code.');
-      }
-      throw new BadRequestException('Incorrect code.');
-    }
+    await this.assertChallengeCodeMatches(challenge, codeHash, now);
 
     const session = await this.prisma.session.create({
       data: { userId: phone.userId, token: generateSessionToken(), createdAt: now },
@@ -209,6 +191,133 @@ export class IdentityAccessService {
     await this.logout(sessionId);
   }
 
+  async changePhoneNumber(userId: string, input: PhoneNumberInput): Promise<OtpSentResult> {
+    this.assertCountryAllowed(input.countryCode);
+    const now = this.clock.now();
+
+    const currentPhone = await this.prisma.phoneNumber.findUniqueOrThrow({ where: { userId } });
+    if (currentPhone.countryCode === input.countryCode && currentPhone.number === input.number) {
+      throw new BadRequestException(
+        'The new phone number must be different from your current one.',
+      );
+    }
+
+    await this.assertPhoneNumberAvailable(input, now, userId);
+
+    return this.issueOtp({
+      phoneNumberId: currentPhone.id,
+      countryCode: input.countryCode,
+      number: input.number,
+      purpose: 'PHONE_CHANGE',
+      now,
+    });
+  }
+
+  async verifyPhoneNumberChange(
+    userId: string,
+    sessionId: string,
+    input: VerifyPhoneNumberChangeDto,
+  ): Promise<void> {
+    const now = this.clock.now();
+    const currentPhone = await this.prisma.phoneNumber.findUniqueOrThrow({ where: { userId } });
+
+    const challenge = await this.prisma.otpChallenge.findFirst({
+      where: { phoneNumberId: currentPhone.id, purpose: 'PHONE_CHANGE' },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (
+      !challenge ||
+      challenge.pendingCountryCode !== input.countryCode ||
+      challenge.pendingNumber !== input.number
+    ) {
+      throw new BadRequestException('No phone number change has been requested for this number.');
+    }
+
+    const codeHash = hashOtpCode(input.code);
+
+    if (challenge.consumedAt) {
+      const isSameCodeStillValid = challenge.codeHash === codeHash && now < challenge.expiresAt;
+      if (!isSameCodeStillValid) {
+        throw new BadRequestException('This code has already been used. Request a new one.');
+      }
+      // Idempotent replay: the change already went through within this
+      // code's validity window.
+      return;
+    }
+
+    await this.assertChallengeCodeMatches(challenge, codeHash, now);
+
+    // Re-check availability at the moment of verification: the number may
+    // have been claimed by someone else since the OTP was sent.
+    await this.assertPhoneNumberAvailable(input, now, userId);
+
+    try {
+      await this.prisma.phoneNumber.update({
+        where: { id: currentPhone.id },
+        data: { countryCode: input.countryCode, number: input.number, verifiedAt: now },
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException('This phone number is already in use.');
+      }
+      throw error;
+    }
+
+    await this.prisma.otpChallenge.update({
+      where: { id: challenge.id },
+      data: { consumedAt: now },
+    });
+
+    await this.prisma.session.deleteMany({ where: { userId, id: { not: sessionId } } });
+  }
+
+  // Rejects a target number already owned by a different User — verified,
+  // or an active (non-expired) unverified registration attempt. Reuses
+  // findActivePhone's pruning so an abandoned attempt past its TTL doesn't
+  // block the change just because nobody looked at it yet.
+  private async assertPhoneNumberAvailable(
+    input: PhoneNumberInput,
+    now: Date,
+    excludingUserId: string,
+  ): Promise<void> {
+    const existing = await this.findActivePhone(input, now);
+    if (existing && existing.userId !== excludingUserId) {
+      throw new ConflictException('This phone number is already in use.');
+    }
+  }
+
+  // Shared by verifyOtp and verifyPhoneNumberChange for a not-yet-consumed
+  // challenge: throws on a lock, an expiry, or a wrong code (incrementing
+  // attemptCount and locking once OTP_MAX_FAILED_ATTEMPTS is hit); returns
+  // once the code matches, leaving the caller to perform its own outcome.
+  private async assertChallengeCodeMatches(
+    challenge: OtpChallenge,
+    codeHash: string,
+    now: Date,
+  ): Promise<void> {
+    if (challenge.lockedAt) {
+      throw new ForbiddenException('Too many incorrect attempts. Request a new code.');
+    }
+
+    if (now >= challenge.expiresAt) {
+      throw new BadRequestException('This code has expired. Request a new one.');
+    }
+
+    if (challenge.codeHash !== codeHash) {
+      const attemptCount = challenge.attemptCount + 1;
+      const isNowLocked = attemptCount >= OTP_MAX_FAILED_ATTEMPTS;
+      await this.prisma.otpChallenge.update({
+        where: { id: challenge.id },
+        data: { attemptCount, lockedAt: isNowLocked ? now : undefined },
+      });
+      if (isNowLocked) {
+        throw new ForbiddenException('Too many incorrect attempts. Request a new code.');
+      }
+      throw new BadRequestException('Incorrect code.');
+    }
+  }
+
   private async issueOtp(
     input: PhoneNumberInput & { phoneNumberId: string; purpose: OtpPurpose; now: Date },
   ): Promise<OtpSentResult> {
@@ -242,7 +351,19 @@ export class IdentityAccessService {
     const expiresAt = new Date(now.getTime() + OTP_EXPIRY_MS);
 
     await this.prisma.otpChallenge.create({
-      data: { phoneNumberId, purpose, codeHash: hashOtpCode(code), expiresAt, createdAt: now },
+      data: {
+        phoneNumberId,
+        purpose,
+        codeHash: hashOtpCode(code),
+        expiresAt,
+        createdAt: now,
+        // PHONE_CHANGE targets a number the User doesn't own yet, so the
+        // pending destination has to be recorded on the challenge itself —
+        // phoneNumberId above still points at the User's current number.
+        ...(purpose === 'PHONE_CHANGE'
+          ? { pendingCountryCode: countryCode, pendingNumber: number }
+          : {}),
+      },
     });
 
     await this.otpSender.send({ countryCode, number }, code);
